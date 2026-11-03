@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>放射性同位体崩壊プロッター</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 min-h-screen text-white">
+
+<div class="max-w-3xl mx-auto px-4 py-8">
+  <h1 class="text-3xl font-bold text-center text-green-400 mb-2">☢️ 放射性同位体崩壊プロッター</h1>
+  <p class="text-center text-gray-400 mb-6 text-sm">指数関数的崩壊曲線をリアルタイム可視化</p>
+
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <!-- コントロール -->
+    <div class="md:col-span-1 bg-gray-900 rounded-2xl p-5 space-y-4">
+      <div>
+        <label for="isotope-select" class="block text-sm text-gray-400 mb-1">同位体プリセット</label>
+        <select id="isotope-select" tabindex="0"
+          class="w-full bg-gray-800 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-400"
+          onchange="onPresetChange()">
+          <option value="c14">炭素-14（5,730年）</option>
+          <option value="i131">ヨウ素-131（8.02日）</option>
+          <option value="ra226">ラジウム-226（1,600年）</option>
+          <option value="u238">ウラン-238（44.7億年）</option>
+          <option value="custom">カスタム</option>
+        </select>
+      </div>
+
+      <div id="custom-section" class="hidden">
+        <label for="custom-halflife" class="block text-sm text-gray-400 mb-1">半減期の値</label>
+        <input id="custom-halflife" type="number" min="0.001" step="any" tabindex="0"
+          class="w-full bg-gray-800 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-400"
+          placeholder="例: 1000" value="1000" oninput="onCustomChange()">
+        <label for="custom-unit" class="block text-sm text-gray-400 mb-1 mt-2">単位</label>
+        <select id="custom-unit" tabindex="0"
+          class="w-full bg-gray-800 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-400"
+          onchange="onCustomChange()">
+          <option value="seconds">秒</option>
+          <option value="minutes">分</option>
+          <option value="hours">時間</option>
+          <option value="days">日</option>
+          <option value="years">年</option>
+        </select>
+      </div>
+
+      <div id="info-box" class="bg-gray-800 rounded-xl p-3 text-xs space-y-1">
+        <p class="text-green-300 font-semibold" id="info-name">炭素-14</p>
+        <p class="text-gray-300" id="info-halflife">半減期: 5,730年</p>
+        <p class="text-gray-400" id="info-note">宇宙線と大気窒素の核反応で生成。放射年代測定に使用。</p>
+      </div>
+
+      <div>
+        <label for="time-slider" class="block text-sm text-gray-400 mb-1">
+          経過時間: <span id="time-label" class="text-green-300 font-bold">0</span>
+        </label>
+        <input id="time-slider" type="range" min="0" max="100" value="0" tabindex="0"
+          class="w-full accent-green-400"
+          oninput="onSliderChange()">
+        <div class="flex justify-between text-xs text-gray-500 mt-1">
+          <span>0</span>
+          <span id="slider-max-label">10半減期</span>
+        </div>
+      </div>
+
+      <div class="bg-gray-800 rounded-xl p-3 text-center">
+        <p class="text-xs text-gray-400">現在の残存量</p>
+        <p class="text-3xl font-bold text-green-400" id="current-pct">100.0%</p>
+        <p class="text-xs text-gray-400 mt-1" id="current-halftimes">0 半減期経過</p>
+      </div>
+    </div>
+
+    <!-- グラフ -->
+    <div class="md:col-span-2 bg-gray-900 rounded-2xl p-4 flex flex-col">
+      <canvas id="decay-canvas" width="480" height="300"
+        class="w-full rounded-xl bg-gray-950"></canvas>
+      <div id="edu-tips" class="mt-3 space-y-1 text-xs text-gray-400"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const PRESETS = {
+  c14:  { name: '炭素-14',    halflifeSeconds: 5730 * 365.25 * 86400, displayHalflife: '5,730年',  unit: '半減期',    note: '宇宙線と大気窒素の核反応で生成。放射年代測定に使用。' },
+  i131: { name: 'ヨウ素-131', halflifeSeconds: 8.02 * 86400,          displayHalflife: '8.02日',   unit: '半減期',    note: '甲状腺疾患の治療・診断に使用。医療用放射性同位体。' },
+  ra226:{ name: 'ラジウム-226',halflifeSeconds: 1600 * 365.25 * 86400,displayHalflife: '1,600年',  unit: '半減期',    note: 'キュリー夫人が発見。α崩壊してラドンを生成する。' },
+  u238: { name: 'ウラン-238',  halflifeSeconds: 4.47e9 * 365.25 * 86400, displayHalflife: '44.7億年', unit: '半減期', note: '地球の年齢（45.4億年）と同程度。鉛-206へ最終崩壊。' },
+};
+
+let currentHalflife = PRESETS.c14.halflifeSeconds;
+let currentPreset = 'c14';
+
+function onPresetChange() {
+  const val = document.getElementById('isotope-select').value;
+  currentPreset = val;
+  const customSec = document.getElementById('custom-section');
+  if (val === 'custom') {
+    customSec.classList.remove('hidden');
+    onCustomChange();
+    return;
+  }
+  customSec.classList.add('hidden');
+  const p = PRESETS[val];
+  currentHalflife = p.halflifeSeconds;
+  document.getElementById('info-name').textContent = p.name;
+  document.getElementById('info-halflife').textContent = '半減期: ' + p.displayHalflife;
+  document.getElementById('info-note').textContent = p.note;
+  document.getElementById('time-slider').value = 0;
+  updateAll();
+}
+
+const UNIT_SECONDS = { seconds: 1, minutes: 60, hours: 3600, days: 86400, years: 365.25 * 86400 };
+
+function onCustomChange() {
+  const v = parseFloat(document.getElementById('custom-halflife').value);
+  const u = document.getElementById('custom-unit').value;
+  if (!isFinite(v) || v <= 0) return;
+  currentHalflife = v * UNIT_SECONDS[u];
+  const unitLabel = { seconds: '秒', minutes: '分', hours: '時間', days: '日', years: '年' }[u];
+  document.getElementById('info-name').textContent = 'カスタム同位体';
+  document.getElementById('info-halflife').textContent = `半減期: ${v} ${unitLabel}`;
+  document.getElementById('info-note').textContent = 'カスタム設定の同位体。';
+  document.getElementById('time-slider').value = 0;
+  updateAll();
+}
+
+function onSliderChange() {
+  updateAll();
+}
+
+function formatTime(seconds) {
+  if (seconds < 120) return seconds.toFixed(1) + '秒';
+  if (seconds < 7200) return (seconds / 60).toFixed(1) + '分';
+  if (seconds < 86400 * 2) return (seconds / 3600).toFixed(1) + '時間';
+  if (seconds < 365.25 * 86400 * 2) return (seconds / 86400).toFixed(1) + '日';
+  if (seconds < 365.25 * 86400 * 1e6) return (seconds / (365.25 * 86400)).toExponential(2) + '年';
+  return (seconds / (365.25 * 86400)).toExponential(2) + '年';
+}
+
+function updateAll() {
+  const sliderVal = parseFloat(document.getElementById('time-slider').value);
+  const maxHalftimes = 10;
+  const halftimesFraction = sliderVal / 100 * maxHalftimes;
+  const elapsed = halftimesFraction * currentHalflife;
+  const pct = Math.pow(0.5, halftimesFraction) * 100;
+
+  document.getElementById('time-label').textContent = formatTime(elapsed);
+  document.getElementById('current-pct').textContent = pct.toFixed(2) + '%';
+  document.getElementById('current-halftimes').textContent = halftimesFraction.toFixed(2) + ' 半減期経過';
+
+  drawCurve(halftimesFraction);
+  updateEduTips();
+}
+
+function drawCurve(currentHalftimes) {
+  const canvas = document.getElementById('decay-canvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const padL = 50, padR = 20, padT = 20, padB = 40;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Background
+  ctx.fillStyle = '#030712';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid
+  ctx.strokeStyle = '#1f2937';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 10; i++) {
+    const x = padL + i / 10 * plotW;
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+  }
+  for (let i = 0; i <= 5; i++) {
+    const y = padT + i / 5 * plotH;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+  }
+
+  // Axes
+  ctx.strokeStyle = '#4b5563';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(padL, padT);
+  ctx.lineTo(padL, padT + plotH);
+  ctx.lineTo(padL + plotW, padT + plotH);
+  ctx.stroke();
+
+  // Y labels
+  ctx.fillStyle = '#9ca3af';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 5; i++) {
+    const pct = (1 - i / 5) * 100;
+    const y = padT + i / 5 * plotH;
+    ctx.fillText(pct.toFixed(0) + '%', padL - 4, y + 4);
+  }
+
+  // X labels (half-lives)
+  ctx.textAlign = 'center';
+  for (let i = 0; i <= 10; i += 2) {
+    const x = padL + i / 10 * plotW;
+    ctx.fillText(i + 't½', x, padT + plotH + 16);
+  }
+
+  // Decay curve
+  ctx.beginPath();
+  ctx.strokeStyle = '#4ade80';
+  ctx.lineWidth = 2.5;
+  for (let px = 0; px <= plotW; px++) {
+    const t = px / plotW * 10;
+    const y = Math.pow(0.5, t);
+    const cx = padL + px;
+    const cy = padT + plotH - y * plotH;
+    if (px === 0) ctx.moveTo(cx, cy); else ctx.lineTo(cx, cy);
+  }
+  ctx.stroke();
+
+  // Area under curve (fill)
+  ctx.save();
+  ctx.beginPath();
+  for (let px = 0; px <= plotW; px++) {
+    const t = px / plotW * 10;
+    const y = Math.pow(0.5, t);
+    const cx = padL + px;
+    const cy = padT + plotH - y * plotH;
+    if (px === 0) ctx.moveTo(cx, cy); else ctx.lineTo(cx, cy);
+  }
+  ctx.lineTo(padL + plotW, padT + plotH);
+  ctx.lineTo(padL, padT + plotH);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(74, 222, 128, 0.08)';
+  ctx.fill();
+  ctx.restore();
+
+  // Half-life markers (vertical dashed lines at each half-life)
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = '#374151';
+  ctx.lineWidth = 1;
+  for (let i = 1; i <= 10; i++) {
+    const x = padL + i / 10 * plotW;
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Current position marker
+  const markerT = currentHalftimes;
+  if (markerT >= 0 && markerT <= 10) {
+    const markerX = padL + markerT / 10 * plotW;
+    const markerY_frac = Math.pow(0.5, markerT);
+    const markerY = padT + plotH - markerY_frac * plotH;
+
+    ctx.strokeStyle = '#fbbf24';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(markerX, padT); ctx.lineTo(markerX, padT + plotH); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(padL, markerY); ctx.lineTo(padL + plotW, markerY); ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.beginPath();
+    ctx.arc(markerX, markerY, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#fbbf24';
+    ctx.fill();
+    ctx.strokeStyle = '#1f2937';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  // Axis titles
+  ctx.fillStyle = '#9ca3af';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('経過時間 (半減期単位)', padL + plotW / 2, H - 4);
+
+  ctx.save();
+  ctx.translate(12, padT + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('残存率 (%)', 0, 0);
+  ctx.restore();
+}
+
+function updateEduTips() {
+  const tips = [
+    '• 半減期1回: 残存 50% (半分が崩壊)',
+    '• 半減期5回: 残存 3.125% (約97%が崩壊)',
+    '• 半減期10回: 残存 0.098% (ほぼ全量崩壊)',
+    '• 式: N(t) = N₀ × (1/2)^(t/t½)',
+  ];
+  const container = document.getElementById('edu-tips');
+  container.innerHTML = tips.map(t => `<p>${escapeHtml(t)}</p>`).join('');
+}
+
+// Init
+updateAll();
+</script>
+</body>
+</html>
